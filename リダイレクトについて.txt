@@ -1,0 +1,108 @@
+★全体の流れ(token-checkのモジュールの処理は割愛)
+
+新たにmiddlewareとしてredirectモジュールを追加して、下記のような流れで処理。
+
+1. /のパスにリクエストが来る
+2. middlewareのredirectモジュールは/callbackでも/redirectでもないので何もしない
+3. middlewareのauthモジュールがログイン状況を判断して、/loginにリダイレクト
+4. /loginのパスにリクエストが来る
+5. middlewareのredirectモジュールは/callbackでも/redirectでもないので何もしない
+6. middlewareのauthモジュールはこの時点では何もしない(何かしてるかもしれないけど)
+7. login.vueのマウント時にauthモジュールにログイン処理を移譲
+8. authモジュールが認証サーバーにリダイレクトし、ログイン後/callbackにリダイレクトされる
+9. /callbackのパスにリクエストが来る
+10. middlewareのredirectモジュールは/callbackなので、307で確認サイトにリダイレクト
+   (この時点でCookieの最終確認日時には値が入っていないので、必ずリダイレクトし、authまで処理を到達させない)
+   (パラメータは引き継いだままリダイレクト。)
+   (確認サイトのgotoパラメータには、/redirectのパスを指定。)
+11. 確認サイトで許可がおりればパラメータが引き継がれた状態で/redirectが呼び出される。
+   (許可が降りなければ、ここでリダイレクトが中断され、authが処理できないので未ログイン状態のままとなる)
+12. /redirectのパスにリクエストが来る
+13. middlewareのredirectモジュールは/redirectなので、最終確認日時をSetCookieしたうえで(すでに許可されている)、307で/callbackにリダイレクトする。
+14. /callbackのパスにリクエストが来る
+15. middlewareのredirectモジュールは/callbackだけど、Cookieの最終確認日時が最近なので、確認サイトにはリダイレクトせずに、そのままauthモジュールに処理渡す。
+16. middlewareのauthモジュールは、パラメータの情報を解析してCookieにトークン情報などをセットし、ログイン状態にして、/に(※正確には最初のリクエストパスに)リダイレクトする。
+17. /のパスにリクエストが来る
+18. middlewareのredirectモジュールは/callbackでも/redirectでもないので何もしない
+19. middlewareのauthモジュールがログイン状況をチェックし、ログイン済みなので、そのままホーム画面が表示される
+
+
+◆redirect.ts
+middlewareとしてredirect.tsを用意して、認証サーバーからのcallback時に、
+リダイレクトする。
+未確認状態であれば、cookieに値は入っていないので必ずリダイレクト。
+確認済みであればcookieに最終確認日時が入っているはずなので、
+1分以内に確認済みであれば、リダイレクトをスキップする。
+----redirect.ts
+import { Context } from "@nuxt/types";
+
+export default function({ route, req, res, redirect }: Context) {
+  const value = getCookie("lastCheckTime", req);
+  const require = requireCheck(value);
+  if (route.path === "/callback" && require) {
+    return redirect(307, "http://localhost:3333");
+  } else if (route.path === "/redirect") {
+    const now = new Date();
+    res.setHeader("Set-Cookie", "lastCheckTime=" + now.getTime() + ";");
+    return redirect(307, "/callback");
+  }
+}
+
+function getCookie(key: string, request: any) {
+  const cookieData =
+    request.headers.cookie !== undefined ? request.headers.cookie : "";
+  const datas = cookieData.split(";").map((data: string) => data.trim());
+  const msgKeyValue = datas.find((data: string) => data.startsWith(`${key}=`));
+  if (msgKeyValue === undefined) {
+    return "";
+  }
+  const msgValue = msgKeyValue.replace(`${key}=`, "");
+  return decodeURI(msgValue);
+}
+
+function requireCheck(lastCheckTimeString: string) {
+  if (!lastCheckTimeString) {
+    return true;
+  }
+  const lastCheckTime = Number(lastCheckTimeString);
+  const TOKEN_TIME_SLACK = 1; // 1分間はチェックしない
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - TOKEN_TIME_SLACK);
+  const checkTime = now.getTime();
+  if (lastCheckTime < checkTime) {
+    return true;
+  }
+  return false;
+}
+----
+
+◆nuxt.config.ts
+middlewareのredirect.tsをauthより先に実行させる
+----nuxt.config.ts
+export default {
+  ...
+  router: {
+    middleware: ["redirect", "token-check", "auth"]
+  },
+  ...
+};
+
+----
+
+◆redirect.vue
+空で用意
+---redirect.vue
+<template>
+  <div></div>
+</template>
+<script></script>
+----
+
+◆callback.vue
+何もしなくてい
+---callback.vue
+<template>
+  <div></div>
+</template>
+<script></script>
+----
